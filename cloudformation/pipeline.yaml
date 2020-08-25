@@ -7,10 +7,10 @@ Parameters:
     Default: tools
     AllowedPattern: "^[-a-z0-9]*$"
     ConstraintDescription: Pipeline name can include numbers, lowercase letters, and hyphens (-).
-  # WebBucketName:
-  #   Type: String
-  #   Description: Name of the web s3 bucket.
-  #   Default: tools.ewelists.com
+  WebBucketName:
+    Type: String
+    Description: Name of the web s3 bucket.
+    Default: tools.ewelists.com
   GitHubUser:
     Type: String
     Description: GitHub User
@@ -297,6 +297,25 @@ Resources:
                 ProjectName: !Ref ToolsIntegrationTestsProject
                 EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Staging","type":"PARAMETER_STORE"}]'
               RunOrder: 2
+            - Name: Deploy-Web
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-Web
+              OutputArtifacts:
+                - Name: D-Web-Staging
+              Configuration:
+                ProjectName: !Ref WebDeployContentProject
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name": "Commit_ID", "value": "#{WebSourceVariables.CommitId}", "type": "PLAINTEXT"},
+                    {"name":"ENVIRONMENT","value":"staging","type":"PLAINTEXT"},
+                    {"name":"WEB_BUCKET","value":"staging.${WebBucketName}","type":"PLAINTEXT"}
+                  ]
+              RunOrder: 3
         - Name: Prod
           Actions:
             - Name: Approve-Deploy
@@ -414,6 +433,92 @@ Resources:
           Status: ENABLED
           GroupName: !Ref ToolsServiceLogGroup
           StreamName: Integration-Tests
+
+  WebDeployContentProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: Web-Tools-Deploy-Content
+      Description: Deploys react web application
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: WEB_BUCKET
+            Value: !Ref WebBucketName
+          - Name: ENVIRONMENT
+            Value: prod
+      ServiceRole: !GetAtt WebDeployContentRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-react.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: web-tools
+          StreamName: DeployContent
+
+  WebDeployContentLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: web-tools
+      RetentionInDays: 30
+
+  WebDeployContentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ToolsWebDeployContentRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: WebDeployContentRolePolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:web-tools"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:web-tools:*"
+          - Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${WebBucketName}/*"
+              - !Sub "arn:aws:s3:::${WebBucketName}"
+              - !Sub "arn:aws:s3:::staging.${WebBucketName}/*"
+              - !Sub "arn:aws:s3:::staging.${WebBucketName}"
+          - Effect: Allow
+            Action:
+              - cloudfront:CreateInvalidation
+              - cloudfront:ListDistributions
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - codepipeline:ListPipelineExecutions
+            Resource: '*'
+          Version: '2012-10-17'
 
   MainCFNRole:
     Type: AWS::IAM::Role
