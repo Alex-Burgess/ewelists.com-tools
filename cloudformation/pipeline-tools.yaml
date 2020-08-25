@@ -1,0 +1,487 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Pipeline for deployment of tools.
+Parameters:
+  PipelineName:
+    Type: String
+    Description: Name of pipeline.
+    Default: tools
+    AllowedPattern: "^[-a-z0-9]*$"
+    ConstraintDescription: Pipeline name can include numbers, lowercase letters, and hyphens (-).
+  GitHubUser:
+    Type: String
+    Description: GitHub User
+    Default: Alex-Burgess
+  GitHubToolsBackendRepo:
+    Type: String
+    Description: GitHub Repository Name
+    Default: ewelists.com-tools-backend
+  GitHubBranch:
+    Type: String
+    Description: GitHub Branch
+    Default: "master"
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: Personal Access Token.
+  GitHubSecret:
+    Type: String
+    NoEcho: true
+
+Resources:
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'pipeline-ewelists-${PipelineName}-${AWS::Region}-artifacts'
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LifecycleConfiguration:
+        Rules:
+          - Id: Build logs expiration
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+            ExpirationInDays: 180
+            Prefix: '*'
+            Status: Enabled
+
+  ToolsServiceBuildsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: services-builds-tools
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LifecycleConfiguration:
+        Rules:
+          - Id: Builds expiration
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+            ExpirationInDays: 60
+            Prefix: '*'
+            Status: Enabled
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-ServiceRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: PipelineServiceRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - cloudformation:CreateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DeleteStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:SetStackPolicy
+                  - iam:PassRole
+                  - sns:Publish
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: "*"
+
+  ToolsBackendWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GitHubSecret
+      Filters:
+        -
+          JsonPath: "$.ref"
+          MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref Pipeline
+      TargetAction: ToolsBackend
+      Name: ToolsBackendWebhook
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+      RegisterWithThirdParty: true
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref PipelineName
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: ToolsBackend
+              Namespace: ToolsBackendVariables
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+              - Name: S-ToolsBackend
+              Configuration:
+                Owner: !Ref GitHubUser
+                Repo: !Ref GitHubToolsBackendRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Services-Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ToolsBuildProject
+              InputArtifacts:
+                - Name: S-ToolsBackend
+              OutputArtifacts:
+                - Name: B-ToolsBackend
+            - Name: ToolsService-UnitTests
+              ActionTypeId:
+                Category: Test
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ToolsUnitTestsProject
+              InputArtifacts:
+                - Name: S-ToolsBackend
+        - Name: Staging
+          Actions:
+            - Name: Deploy-Tools-Service
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: B-ToolsBackend
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt ServicesCFNRole.Arn
+                StackName: Service-Tools-Staging
+                TemplatePath: B-ToolsBackend::tools-packaged.yaml
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides: '{ "Environment": "staging" }'
+              RunOrder: 1
+            - Name: Tools-Integration-Tests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-ToolsBackend
+              Configuration:
+                ProjectName: !Ref ToolsIntegrationTestsProject
+                EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Staging","type":"PARAMETER_STORE"}]'
+              RunOrder: 2
+        - Name: Prod
+          Actions:
+            - Name: Approve-Deploy
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+            - Name: Deploy-Tools-Service
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: B-ToolsBackend
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt ServicesCFNRole.Arn
+                StackName: Service-Tools-Prod
+                TemplatePath: B-ToolsBackend::tools-packaged.yaml
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides: '{ "Environment": "prod" }'
+              RunOrder: 2
+            - Name: Tools-Integration-Tests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-ToolsBackend
+              Configuration:
+                ProjectName: !Ref ToolsIntegrationTestsProject
+                EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Prod","type":"PARAMETER_STORE"}]'
+              RunOrder: 3
+
+  ToolsBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ToolsService-API-Builds
+      Description: Builds Tools service repo APIs
+      ServiceRole: !GetAtt ToolsServiceBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: TOOLS_BUILD_OUTPUT_BUCKET
+            Value: !Ref ToolsServiceBuildsBucket
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ToolsServiceLogGroup
+          StreamName: Builds
+      TimeoutInMinutes: 10
+
+  ToolsUnitTestsProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ToolsService-UnitTests
+      Description: Performs the unit testing of the lambda functions.
+      ServiceRole: !GetAtt ToolsServiceBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-unittests.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ToolsServiceLogGroup
+          StreamName: UnitTests
+      TimeoutInMinutes: 10
+
+  ToolsIntegrationTestsProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: ToolsService-Integration-Tests
+      Description: Performs integration testing via Postman API.
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:4.0'
+      ServiceRole: !GetAtt ToolsServiceBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-postman.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ToolsServiceLogGroup
+          StreamName: Integration-Tests
+
+  ToolsServiceBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ToolsServiceBuildAndTestRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: ServicesRolePolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ToolsServiceLogGroup}"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ToolsServiceLogGroup}:*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketAcl
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${ToolsServiceBuildsBucket}/*"
+          - Effect: Allow
+            Action:
+              - ssm:GetParameters
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Postman/*"
+          Version: '2012-10-17'
+
+  ToolsServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: tools-service-logs
+      RetentionInDays: 30
+
+  ServicesCFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-Tools-Service-CFN-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: ManageCloudFormation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DeleteStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: ManagePiplineAndBuildArtifactBuckets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:GetObject
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketPublicAccessBlock
+                Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+                  - !Sub "arn:aws:s3:::${ToolsServiceBuildsBucket}/*"
+        - PolicyName: ManageIam
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - iam:ListRoles
+                  - iam:ListPolicies
+                  - iam:GetRole
+                  - iam:GetPolicy
+                  - iam:CreateRole
+                  - iam:CreatePolicy
+                  - iam:DeleteRole
+                  - iam:DeletePolicy
+                  - iam:UpdateRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PassRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:getRolePolicy
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: ManageServerless
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - lambda:*
+                  - apigateway:*
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: ParameterStore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - ssm:GetParameters
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertEmail'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertNumber'
+        - PolicyName: Events
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - events:*
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/Service-Tools*'
+        - PolicyName: SNS
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - sns:List*
+                  - sns:Get*
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:ConfirmSubscription
+                  - sns:Set*
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:NotFound-*'
+                  - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:Backup-*'
+        - PolicyName: Alarms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - cloudwatch:*
+                Effect: Allow
+                Resource: '*'

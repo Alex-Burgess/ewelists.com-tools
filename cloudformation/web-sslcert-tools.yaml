@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: SSL certificate used in cloudfront distribution, must be created in us-east-1
+Parameters:
+  DomainName:
+    Description: Domain name for your website (example.com)
+    Type: String
+    ConstraintDescription: Must be a web domain, ending in .com. Can include lower case letters, numbers and hypens.
+    Default: tools.ewelists.com
+  Environment:
+    Description: Environment type.
+    Default: test
+    Type: String
+    AllowedValues:
+      - prod
+      - staging
+      - dev
+      - test
+    ConstraintDescription: must specify prod or test.
+
+Conditions:
+  Prod: !Equals [ !Ref Environment, prod ]
+
+Resources:
+  SslCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+      SubjectAlternativeNames:
+        - !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+        - !If [Prod, !Sub "*.${DomainName}", !Sub "*.${Environment}.${DomainName}"]
+      ValidationMethod: "DNS"
+
+Outputs:
+  CertificateArn:
+    Description: ARN of the ACM (SSL) Certificate
+    Value: !Ref SslCertificate

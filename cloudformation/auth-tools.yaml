@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates resources required for authentication, e.g. cognito user pools and federation configuration.
+
+Parameters:
+  UserPoolName:
+    Type: String
+    Description: The name for the user pool
+    Default: Ewelists-Tools
+  FromEmail:
+    Type: String
+    Description: Email address used to send signup emails.
+    Default: contact@ewelists.com
+  Environment:
+    Description: Environment type.
+    Default: prod
+    Type: String
+    AllowedValues:
+      - prod
+      - staging
+      - dev
+      - test
+
+Conditions:
+  Prod: !Equals [ !Ref Environment, prod ]
+  Staging: !Equals [ !Ref Environment, staging ]
+
+Resources:
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - aws.cognito.signin.user.admin
+        - profile
+      CallbackURLs:
+        - !If
+            - Prod
+            - 'https://tools.ewelists.com/'
+            - !If
+              - Staging
+              - !Sub 'https://${Environment}.tools.ewelists.com/'
+              - http://localhost:3000/
+      ClientName: Ewelists-Tools
+      LogoutURLs:
+        - !If
+            - Prod
+            - 'https://tools.ewelists.com/'
+            - !If
+              - Staging
+              - !Sub 'https://${Environment}.tools.ewelists.com/'
+              - http://localhost:3000/
+      RefreshTokenValidity: 30
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref UserPool
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !If [Prod, 'tools-ewelists', !Sub '${Environment}-tools-ewelists']
+      UserPoolId: !Ref UserPool
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !Sub 'cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+          ServerSideTokenCheck: false
+      IdentityPoolName: !If [Prod, !Ref UserPoolName, !Sub '${UserPoolName} ${Environment}']
+
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        unauthenticated: !GetAtt UnAuthRole.Arn
+        authenticated: !GetAtt AuthRole.Arn
+
+  AuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${UserPoolName}-${Environment}-CognitoAuthRole'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated:
+            - cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: "authenticated"
+      Path: "/"
+      Policies:
+      - PolicyName: CognitoAuthRolePolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - mobileanalytics:PutEvents
+              - cognito-sync:*
+              - cognito-identity:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - execute-api:Invoke
+            Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/*/*'
+          Version: '2012-10-17'
+
+  UnAuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${UserPoolName}-${Environment}-CognitoUnAuthRole'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated:
+            - cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: "unauthenticated"
+      Path: "/"
+      Policies:
+      - PolicyName: CognitoAuthRolePolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - mobileanalytics:PutEvents
+              - cognito-sync:*
+            Resource: "*"
+          Version: '2012-10-17'
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !If [Prod, !Ref UserPoolName, !Sub '${UserPoolName}-${Environment}']
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      EmailVerificationMessage: "Your verification code is {####}."
+      EmailVerificationSubject: "Verify your Ewelists Tools account"
+      EmailConfiguration:
+          SourceArn: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${FromEmail}"
+          ReplyToEmailAddress: !Ref FromEmail
+          From: !Sub "Ewelists <${FromEmail}>"
+          EmailSendingAccount: "DEVELOPER"
+      VerificationMessageTemplate:
+          SmsMessage: "Your verification code is {####}. "
+          EmailSubject:
+            !If
+              - Prod
+              - "Verify your Ewelists account"
+              - !Sub "Verify your Ewelists account (${Environment})"
+          DefaultEmailOption: "CONFIRM_WITH_CODE"
+
+
+Outputs:
+  userPoolId:
+    Description: Cognito user pool id.
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub 'Auth-Tools-${Environment}-UserPoolId'
+
+
+  userPoolClientId:
+    Value: !Ref UserPoolClient
+
+  identityPoolId:
+    Value: !Ref IdentityPool
