@@ -474,8 +474,12 @@ Resources:
                 Resource:
                   - "arn:aws:s3:::tools.ewelists.com"
                   - "arn:aws:s3:::tools.ewelists.com/*"
+                  - "arn:aws:s3:::tools.ewelists.com-logging"
+                  - "arn:aws:s3:::tools.ewelists.com-logging/*"
                   - "arn:aws:s3:::staging.tools.ewelists.com"
                   - "arn:aws:s3:::staging.tools.ewelists.com/*"
+                  - "arn:aws:s3:::staging.tools.ewelists.com-logging"
+                  - "arn:aws:s3:::staging.tools.ewelists.com-logging/*"
         - PolicyName: ManageRoute53
           PolicyDocument:
             Version: '2012-10-17'

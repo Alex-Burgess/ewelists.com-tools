@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: SSL certificate used in cloudfront distribution, must be created in us-east-1
+Parameters:
+  DomainName:
+    Description: Domain name for your website (example.com)
+    Type: String
+    ConstraintDescription: Must be a web domain, ending in .com. Can include lower case letters, numbers and hypens.
+    Default: tools.ewelists.com
+  Environment:
+    Description: Environment type.
+    Default: test
+    Type: String
+    AllowedValues:
+      - prod
+      - staging
+      - dev
+      - test
+    ConstraintDescription: must specify prod or test.
+
+Conditions:
+  Prod: !Equals [ !Ref Environment, prod ]
+
+Resources:
+  SubDomainHostedZone:
+    Type: "AWS::Route53::HostedZone"
+    Properties:
+      HostedZoneConfig:
+        Comment: "Hosted zone for a subdomain"
+      Name: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+      HostedZoneTags:
+        - Key: "Environment"
+          Value: !Ref Environment
+
+  SubDomainRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: 'ewelists.com.'
+      Comment: Naming servers for subdomain hosted zone.
+      Name: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+      Type: NS
+      TTL: '172800'
+      ResourceRecords: !GetAtt SubDomainHostedZone.NameServers
+
+
+Outputs:
+  HostedZone:
+    Description: HostedZoneID of sub domain
+    Value: !Ref SubDomainHostedZone

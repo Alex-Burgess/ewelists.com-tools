@@ -6,6 +6,9 @@ Parameters:
     Type: String
     ConstraintDescription: Must be a web domain, ending in .com. Can include lower case letters, numbers and hypens.
     Default: tools.ewelists.com
+  HostedZone:
+    Description: HostedZoneID of Sub domain.
+    Type: String
   Environment:
     Description: Environment type.
     Default: test
@@ -28,6 +31,9 @@ Resources:
       SubjectAlternativeNames:
         - !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
         - !If [Prod, !Sub "*.${DomainName}", !Sub "*.${Environment}.${DomainName}"]
+      DomainValidationOptions:
+        - DomainName: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+          HostedZoneId: !Ref HostedZone
       ValidationMethod: "DNS"
 
 Outputs:
