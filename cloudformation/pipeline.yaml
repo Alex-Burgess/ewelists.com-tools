@@ -325,6 +325,24 @@ Resources:
                 Provider: Manual
                 Version: '1'
               RunOrder: 1
+            - Name: Deploy-Main
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: S-Main
+              OutputArtifacts:
+                - Name: D-Main-Prod
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt [MainCFNRole, Arn]
+                StackName: Web-Tools-Prod
+                TemplatePath: !Sub "S-Main::${WebInfraTemplatePath}"
+                ParameterOverrides: '{ "Environment": "prod" }'
+                OutputFileName: MainOutput.json
+              RunOrder: 2
             - Name: Deploy-Tools-Service
               ActionTypeId:
                 Category: Deploy
@@ -353,6 +371,25 @@ Resources:
                 ProjectName: !Ref ToolsIntegrationTestsProject
                 EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Prod","type":"PARAMETER_STORE"}]'
               RunOrder: 3
+            - Name: Deploy-Web
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-Web
+              OutputArtifacts:
+                - Name: D-Web-Prod
+              Configuration:
+                ProjectName: !Ref WebDeployContentProject
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name": "Commit_ID", "value": "#{WebSourceVariables.CommitId}", "type": "PLAINTEXT"},
+                    {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
+                    {"name":"WEB_BUCKET","value":"${WebBucketName}","type":"PLAINTEXT"}
+                  ]
+              RunOrder: 4
 
   ToolsBuildProject:
     Type: AWS::CodeBuild::Project

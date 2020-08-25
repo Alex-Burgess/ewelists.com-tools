@@ -77,3 +77,11 @@ aws cloudformation update-stack --stack-name Pipeline-Tools  \
   --parameters ParameterKey=GitHubToken,ParameterValue=`aws ssm get-parameter --name "/ewelists.com/github" --with-decryption --query 'Parameter.Value' --output text` \
     ParameterKey=GitHubSecret,ParameterValue=`aws ssm get-parameter --name "/ewelists.com/github_secret" --with-decryption --query  'Parameter.Value' --output text`
 ```
+
+## Reference
+### Admin Create Accounts
+```
+aws cognito-idp sign-up --region eu-west-1 --client-id YOUR_COGNITO_APP_CLIENT_ID --username admin@example.com --password Passw0rd!
+
+aws cognito-idp admin-confirm-sign-up --region eu-west-1 --user-pool-id YOUR_COGNITO_USER_POOL_ID --username admin@example.com
+```
