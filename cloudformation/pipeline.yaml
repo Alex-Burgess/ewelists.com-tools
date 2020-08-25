@@ -7,14 +7,14 @@ Parameters:
     Default: tools
     AllowedPattern: "^[-a-z0-9]*$"
     ConstraintDescription: Pipeline name can include numbers, lowercase letters, and hyphens (-).
+  # WebBucketName:
+  #   Type: String
+  #   Description: Name of the web s3 bucket.
+  #   Default: tools.ewelists.com
   GitHubUser:
     Type: String
     Description: GitHub User
     Default: Alex-Burgess
-  GitHubToolsBackendRepo:
-    Type: String
-    Description: GitHub Repository Name
-    Default: ewelists.com-tools-backend
   GitHubBranch:
     Type: String
     Description: GitHub Branch
@@ -26,6 +26,22 @@ Parameters:
   GitHubSecret:
     Type: String
     NoEcho: true
+  InfraRepo:
+    Type: String
+    Description: Tools Infra Repository Name
+    Default: ewelists.com-tools
+  ServicesRepo:
+    Type: String
+    Description: Tools Services Repository Name
+    Default: ewelists.com-tools-backend
+  WebRepo:
+    Type: String
+    Description: Tools Web Repository Name
+    Default: ewelists.com-tools-web
+  WebInfraTemplatePath:
+    Default: cloudformation/web-infra.yaml
+    Description: The path of the Web stack template
+    Type: String
 
 Resources:
   PipelineArtifactBucket:
@@ -103,7 +119,7 @@ Resources:
                   - codebuild:StartBuild
                 Resource: "*"
 
-  ToolsBackendWebhook:
+  MainWebhook:
     Type: AWS::CodePipeline::Webhook
     Properties:
       Authentication: GITHUB_HMAC
@@ -114,8 +130,40 @@ Resources:
           JsonPath: "$.ref"
           MatchEquals: refs/heads/{Branch}
       TargetPipeline: !Ref Pipeline
-      TargetAction: ToolsBackend
-      Name: ToolsBackendWebhook
+      TargetAction: Main
+      Name: ToolsMainWebhook
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+      RegisterWithThirdParty: true
+
+  WebWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GitHubSecret
+      Filters:
+        -
+          JsonPath: "$.ref"
+          MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref Pipeline
+      TargetAction: Web
+      Name: ToolsWebWebhook
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+      RegisterWithThirdParty: true
+
+  ServicesWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GitHubSecret
+      Filters:
+        -
+          JsonPath: "$.ref"
+          MatchEquals: refs/heads/{Branch}
+      TargetPipeline: !Ref Pipeline
+      TargetAction: Services
+      Name: ToolsServicesWebhook
       TargetPipelineVersion: !GetAtt Pipeline.Version
       RegisterWithThirdParty: true
 
@@ -130,18 +178,49 @@ Resources:
       Stages:
         - Name: Source
           Actions:
-            - Name: ToolsBackend
-              Namespace: ToolsBackendVariables
+            - Name: Main
               ActionTypeId:
                 Category: Source
                 Owner: ThirdParty
                 Version: '1'
                 Provider: GitHub
               OutputArtifacts:
-              - Name: S-ToolsBackend
+              - Name: S-Main
               Configuration:
                 Owner: !Ref GitHubUser
-                Repo: !Ref GitHubToolsBackendRepo
+                Repo: !Ref InfraRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+                PollForSourceChanges: false
+              RunOrder: 1
+            - Name: Web
+              Namespace: WebSourceVariables
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+              - Name: S-Web
+              Configuration:
+                Owner: !Ref GitHubUser
+                Repo: !Ref WebRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+                PollForSourceChanges: false
+              RunOrder: 1
+            - Name: Services
+              Namespace: ServicesVariables
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              OutputArtifacts:
+              - Name: S-Services
+              Configuration:
+                Owner: !Ref GitHubUser
+                Repo: !Ref ServicesRepo
                 Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubToken
                 PollForSourceChanges: false
@@ -157,9 +236,9 @@ Resources:
               Configuration:
                 ProjectName: !Ref ToolsBuildProject
               InputArtifacts:
-                - Name: S-ToolsBackend
+                - Name: S-Services
               OutputArtifacts:
-                - Name: B-ToolsBackend
+                - Name: B-Services
             - Name: ToolsService-UnitTests
               ActionTypeId:
                 Category: Test
@@ -169,9 +248,27 @@ Resources:
               Configuration:
                 ProjectName: !Ref ToolsUnitTestsProject
               InputArtifacts:
-                - Name: S-ToolsBackend
+                - Name: S-Services
         - Name: Staging
           Actions:
+            - Name: Deploy-Main
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: S-Main
+              OutputArtifacts:
+                - Name: D-Main-Staging
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt [MainCFNRole, Arn]
+                StackName: Web-Tools-Staging
+                TemplatePath: !Sub "S-Main::${WebInfraTemplatePath}"
+                ParameterOverrides: '{ "Environment": "staging" }'
+                OutputFileName: MainOutput.json
+              RunOrder: 1
             - Name: Deploy-Tools-Service
               ActionTypeId:
                 Category: Deploy
@@ -179,12 +276,12 @@ Resources:
                 Provider: CloudFormation
                 Version: "1"
               InputArtifacts:
-                - Name: B-ToolsBackend
+                - Name: B-Services
               Configuration:
                 ActionMode: CREATE_UPDATE
                 RoleArn: !GetAtt ServicesCFNRole.Arn
                 StackName: Service-Tools-Staging
-                TemplatePath: B-ToolsBackend::tools-packaged.yaml
+                TemplatePath: B-Services::tools-packaged.yaml
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "staging" }'
               RunOrder: 1
@@ -195,7 +292,7 @@ Resources:
                 Version: '1'
                 Provider: CodeBuild
               InputArtifacts:
-                - Name: S-ToolsBackend
+                - Name: S-Services
               Configuration:
                 ProjectName: !Ref ToolsIntegrationTestsProject
                 EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Staging","type":"PARAMETER_STORE"}]'
@@ -216,12 +313,12 @@ Resources:
                 Provider: CloudFormation
                 Version: "1"
               InputArtifacts:
-                - Name: B-ToolsBackend
+                - Name: B-Services
               Configuration:
                 ActionMode: CREATE_UPDATE
                 RoleArn: !GetAtt ServicesCFNRole.Arn
                 StackName: Service-Tools-Prod
-                TemplatePath: B-ToolsBackend::tools-packaged.yaml
+                TemplatePath: B-Services::tools-packaged.yaml
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "prod" }'
               RunOrder: 2
@@ -232,7 +329,7 @@ Resources:
                 Version: '1'
                 Provider: CodeBuild
               InputArtifacts:
-                - Name: S-ToolsBackend
+                - Name: S-Services
               Configuration:
                 ProjectName: !Ref ToolsIntegrationTestsProject
                 EnvironmentVariables: '[{"name":"ENVIRONMENT_ID","value":"/Postman/Environment/Prod","type":"PARAMETER_STORE"}]'
@@ -317,6 +414,95 @@ Resources:
           Status: ENABLED
           GroupName: !Ref ToolsServiceLogGroup
           StreamName: Integration-Tests
+
+  MainCFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-MainCFN-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: ManageCloudFormation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DeleteStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: SSLCertificateIdParameterStore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - ssm:GetParameters
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tools.ewelists.com/staging/SSLCertificateId'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tools.ewelists.com/prod/SSLCertificateId'
+        - PolicyName: ManageS3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:GetObject
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutLifecycleConfiguration
+                  - s3:PutBucketAcl
+                  - s3:GetBucketAcl
+                  - s3:PutBucketLogging
+                  - s3:PutMetricsConfiguration
+                  - s3:PutBucketWebsite
+                  - s3:PutBucketPolicy
+                  - s3:GetBucketPolicy
+                Effect: Allow
+                Resource:
+                  - "arn:aws:s3:::tools.ewelists.com"
+                  - "arn:aws:s3:::tools.ewelists.com/*"
+                  - "arn:aws:s3:::staging.tools.ewelists.com"
+                  - "arn:aws:s3:::staging.tools.ewelists.com/*"
+        - PolicyName: ManageRoute53
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - route53:*
+                Effect: Allow
+                Resource:
+                  - "*"
+        - PolicyName: ManageCloudFront
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - cloudfront:CreateCloudFrontOriginAccessIdentity
+                  - cloudfront:CreateDistribution
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:GetCloudFrontOriginAccessIdentity
+                  - cloudfront:GetCloudFrontOriginAccessIdentityConfig
+                  - cloudfront:DeleteCloudFrontOriginAccessIdentity
+                  - cloudfront:TagResource
+                  - cloudfront:GetDistribution
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:UpdateCloudFrontOriginAccessIdentity
+                Effect: Allow
+                Resource:
+                  - "*"
 
   ToolsServiceBuildRole:
     Type: AWS::IAM::Role
