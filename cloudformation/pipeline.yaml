@@ -33,7 +33,7 @@ Parameters:
   ServicesRepo:
     Type: String
     Description: Tools Services Repository Name
-    Default: ewelists.com-tools-backend
+    Default: ewelists.com-tools-services
   WebRepo:
     Type: String
     Description: Tools Web Repository Name
