@@ -5,6 +5,8 @@ Repo for the main stack templates and documentation for ewelists tools applicati
 - **Notfound Check:** A function which runs on a schedule to check if there are any items in the Notfound table which need our attention (i.e. images and price updating).
 - **Backups:** A function that creates backups of the DynamoDB tables.
 
+Some of the tools make use a [product scraping API](https://www.scrapinghub.com/) with [login](https://app.scrapinghub.com/account/login/).
+
 
 ## Contents
 
@@ -52,6 +54,11 @@ The steps below are used to build the test environment of the application.
     ```
     aws cloudformation create-stack --stack-name Web-Tools-Test --template-body file://web-infra.yaml \
       --parameters ParameterKey=Environment,ParameterValue=test
+    ```
+1. **Services Secrets:**
+    ```
+    aws ssm put-parameter --name /Tools/ScrapingHub/APIKey --type SecureString \
+     --value "f38ecd9a-...."
     ```
 1. **Services Stack:**
     ```
