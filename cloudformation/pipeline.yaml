@@ -331,7 +331,8 @@ Resources:
                   {"name":"CONFIG","value":"cypress.staging.json","type":"PLAINTEXT"},
                   {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
                   {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
-                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"}
+                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"},
+                  {"name":"TEST_TAG","value":"smoke","type":"PLAINTEXT"}
                 ]'
               RunOrder: 4
         - Name: Prod
@@ -423,7 +424,8 @@ Resources:
                   {"name":"CONFIG","value":"cypress.prod.json","type":"PLAINTEXT"},
                   {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
                   {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
-                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"}
+                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"},
+                  {"name":"TEST_TAG","value":"smoke","type":"PLAINTEXT"}
                 ]'
               RunOrder: 5
 
