@@ -156,6 +156,10 @@ Deployments to the web and services layers of the staging and production applica
     ```
     aws ssm put-parameter --name /Postman/Collection/Tools --type String --value "6596444-38afc6ee-????"
     ```
+1. **Cypress Key:** To record test runs in the cypress dashboard a key is required.
+    ```
+    aws ssm put-parameter --name /Cypress/Tools/Key --type SecureString --value "6596444-38afc6ee-????"
+    ```
 1. **Create pipeline:**
     ```
     aws cloudformation create-stack --stack-name Pipeline-Tools  \

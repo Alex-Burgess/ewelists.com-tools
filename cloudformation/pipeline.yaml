@@ -239,7 +239,7 @@ Resources:
                 - Name: S-Services
               OutputArtifacts:
                 - Name: B-Services
-            - Name: ToolsService-UnitTests
+            - Name: Services-UnitTests
               ActionTypeId:
                 Category: Test
                 Owner: AWS
@@ -269,7 +269,7 @@ Resources:
                 ParameterOverrides: '{ "Environment": "staging" }'
                 OutputFileName: MainOutput.json
               RunOrder: 1
-            - Name: Deploy-Tools-Service
+            - Name: Deploy-Services
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -285,7 +285,7 @@ Resources:
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "staging" }'
               RunOrder: 1
-            - Name: Tools-Integration-Tests
+            - Name: Integration-Tests
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -316,6 +316,24 @@ Resources:
                     {"name":"WEB_BUCKET","value":"staging.${WebBucketName}","type":"PLAINTEXT"}
                   ]
               RunOrder: 3
+            - Name: End-To-End-Tests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-Web
+              Configuration:
+                ProjectName: !Ref ToolsE2ETestsProject
+                EnvironmentVariables: '[
+                  {"name":"ENVIRONMENT","value":"staging","type":"PLAINTEXT"},
+                  {"name":"CONFIG","value":"cypress.staging.json","type":"PLAINTEXT"},
+                  {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
+                  {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
+                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"}
+                ]'
+              RunOrder: 4
         - Name: Prod
           Actions:
             - Name: Approve-Deploy
@@ -343,7 +361,7 @@ Resources:
                 ParameterOverrides: '{ "Environment": "prod" }'
                 OutputFileName: MainOutput.json
               RunOrder: 2
-            - Name: Deploy-Tools-Service
+            - Name: Deploy-Services
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -359,7 +377,7 @@ Resources:
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "prod" }'
               RunOrder: 2
-            - Name: Tools-Integration-Tests
+            - Name: Integration-Tests
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -390,6 +408,24 @@ Resources:
                     {"name":"WEB_BUCKET","value":"${WebBucketName}","type":"PLAINTEXT"}
                   ]
               RunOrder: 4
+            - Name: End-To-End-Tests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: S-Web
+              Configuration:
+                ProjectName: !Ref ToolsE2ETestsProject
+                EnvironmentVariables: '[
+                  {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
+                  {"name":"CONFIG","value":"cypress.prod.json","type":"PLAINTEXT"},
+                  {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
+                  {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
+                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"}
+                ]'
+              RunOrder: 5
 
   ToolsBuildProject:
     Type: AWS::CodeBuild::Project
@@ -470,6 +506,32 @@ Resources:
           Status: ENABLED
           GroupName: !Ref ToolsServiceLogGroup
           StreamName: Integration-Tests
+
+  ToolsE2ETestsProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: ToolsService-E2E-Tests
+      Description: Performs end-to-end tests with cypress.
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:4.0'
+      ServiceRole: !GetAtt ToolsServiceBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-cypress.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ToolsServiceLogGroup
+          StreamName: E2E-Tests
+
 
   WebDeployContentProject:
     Type: 'AWS::CodeBuild::Project'
@@ -690,6 +752,21 @@ Resources:
               - ssm:GetParameters
             Resource:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Postman/*"
+          Version: '2012-10-17'
+      - PolicyName: E2EPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:*
+            Resource:
+              - Fn::ImportValue: Auth-Tools-staging-UserPoolArn
+              - Fn::ImportValue: Auth-Tools-prod-UserPoolArn
+          - Effect: Allow
+            Action:
+              - ssm:GetParameters
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
           Version: '2012-10-17'
 
   ToolsServiceLogGroup:
