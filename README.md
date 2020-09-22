@@ -171,6 +171,25 @@ Deployments to the web and services layers of the staging and production applica
 1. **Initial Deploy:** The **Release Change** button can be used to trigger the first run through the pipeline.
 1. **Update Config.js and Re-Deploy:** This step could be further automated in the **Deploy-Web** step, by passing the API details as variables to the build script that deploys the web application and automating the update of the config.js file.
 
+## Cypress Testing
+E2E smoke tests are carried out as part of deployments to staging and production environments.  In addition to this, there is a codebuild project which can allow Cypress tests to be triggered manually.  The default setup is test the full suite of regression tests in parallel and recorded to the Cypress dashboard.  The test tag, environment and cypress config file can all be overided by changing the environment variables.  The github branch can be updated by changing relevant parameter to change the source configuration in the template.
+
+
+1. **Create cypress key:**
+    ```
+    aws ssm put-parameter --name /Cypress/Tools/Key --type SecureString --value "6596444-38afc6ee-????"
+    ```
+1. **Create resources:**
+    ```
+    aws cloudformation create-stack --stack-name Build-Tools-Regression-Tests  \
+      --template-body file://e2e-regression-tests.yaml  \
+      --capabilities CAPABILITY_NAMED_IAM
+    ```
+1. **Trigger Test Run:**
+    ```
+    aws codebuild start-build-batch --project-name Tools-Regression-Tests
+    ```
+
 ## Reference
 ### Admin Create Accounts
 ```

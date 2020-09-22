@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Build project to run full UI regression tests for Tools Application
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Name for the build project
+    Default: Tools-Regression-Tests
+  Environment:
+    Description: Environment type.
+    Default: staging
+    Type: String
+    AllowedValues:
+      - prod
+      - staging
+  Repo:
+    Type: String
+    Description: Repository where cypress tests reside.
+    Default: https://github.com/Alex-Burgess/ewelists.com-tools-web.git
+  BuildSpec:
+    Default: buildspec-cypress-regression-project.yaml
+    Description: Name of the buildspec file.
+    Type: String
+  TestTag:
+    Description: Type of tests to run.  Can run full regression tests or limit to smoke tests.
+    Default: regression
+    Type: String
+    AllowedValues:
+      - regression
+      - smoke
+  SourceVersion:
+    Type: String
+    Description: Commit ID, branch name, or tag name that corresponds to the version of source code you want to build.
+    Default: master
+
+Resources:
+  E2ETestsProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: !Ref ProjectName
+      Description: Performs end-to-end tests with cypress.
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:4.0'
+        EnvironmentVariables:
+        - Name: CONFIG
+          Type: PLAINTEXT
+          Value: !Sub 'cypress.${Environment}.json'
+        - Name: ENVIRONMENT
+          Type: PLAINTEXT
+          Value: !Ref Environment
+        - Name: TEST_TAG
+          Type: PLAINTEXT
+          Value: !Ref TestTag
+      ServiceRole: !GetAtt BuildProjectRole.Arn
+      Source:
+        Type: GITHUB
+        Location: !Ref Repo
+        BuildSpec: !Ref BuildSpec
+      SourceVersion: !Ref SourceVersion
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref LogGroup
+          StreamName: !Sub '${Environment}-Tests'
+      BuildBatchConfig:
+        ServiceRole: !Ref BatchServiceRole
+        TimeoutInMins: 15
+        Restrictions:
+          MaximumBuildsAllowed: 10
+
+  BuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-BuildProject-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LoggingPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+          Version: '2012-10-17'
+      - PolicyName: CypressScriptsPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:AdminCreateUser
+              - cognito-idp:AdminSetUserPassword
+              - cognito-idp:AdminUpdateUserAttributes
+              - cognito-idp:AdminDeleteUser
+            Resource:
+              - Fn::ImportValue: !Sub 'Auth-Tools-${Environment}-UserPoolArn'
+          - Effect: Allow
+            Action:
+              - 'dynamodb:PutItem'
+              - 'dynamodb:Query'
+              - 'dynamodb:UpdateItem'
+              - 'dynamodb:GetItem'
+              - 'dynamodb:Scan'
+              - 'dynamodb:DeleteItem'
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-${Environment}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-${Environment}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-${Environment}"
+          - Effect: Allow
+            Action:
+              - ssm:GetParameters
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
+          Version: '2012-10-17'
+
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-BatchService-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: BatchBuildsPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+              - codebuild:RetryBuild
+            Resource:
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}'
+          Version: '2012-10-17'
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '${ProjectName}-Logs'
+      RetentionInDays: 30
