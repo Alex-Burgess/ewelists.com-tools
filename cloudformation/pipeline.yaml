@@ -117,6 +117,8 @@ Resources:
                   - sns:Publish
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
+                  - codebuild:BatchGetBuildBatches
+                  - codebuild:StartBuildBatch
                 Resource: "*"
 
   MainWebhook:
@@ -326,6 +328,7 @@ Resources:
                 - Name: S-Web
               Configuration:
                 ProjectName: !Ref ToolsE2ETestsProject
+                BatchEnabled: true
                 EnvironmentVariables: '[
                   {"name":"ENVIRONMENT","value":"staging","type":"PLAINTEXT"},
                   {"name":"CONFIG","value":"cypress.staging.json","type":"PLAINTEXT"},
@@ -419,6 +422,7 @@ Resources:
                 - Name: S-Web
               Configuration:
                 ProjectName: !Ref ToolsE2ETestsProject
+                BatchEnabled: true
                 EnvironmentVariables: '[
                   {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
                   {"name":"CONFIG","value":"cypress.prod.json","type":"PLAINTEXT"},
@@ -524,7 +528,7 @@ Resources:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
         Image: 'aws/codebuild/standard:4.0'
-      ServiceRole: !GetAtt ToolsServiceBuildRole.Arn
+      ServiceRole: !GetAtt E2EBuildProjectRole.Arn
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec-cypress.yaml
@@ -533,6 +537,11 @@ Resources:
           Status: ENABLED
           GroupName: !Ref ToolsServiceLogGroup
           StreamName: E2E-Tests
+      BuildBatchConfig:
+        ServiceRole: !Ref E2EBatchServiceRole
+        TimeoutInMins: 15
+        Restrictions:
+          MaximumBuildsAllowed: 10
 
 
   WebDeployContentProject:
@@ -755,7 +764,44 @@ Resources:
             Resource:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Postman/*"
           Version: '2012-10-17'
-      - PolicyName: E2EPolicy
+
+  E2EBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ToolsServiceE2ETestsBuildProjectRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: ArtifactsAndLogsPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ToolsServiceLogGroup}"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ToolsServiceLogGroup}:*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketAcl
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${ToolsServiceBuildsBucket}/*"
+          Version: '2012-10-17'
+      - PolicyName: CypressScriptsPolicy
         PolicyDocument:
           Statement:
           - Effect: Allow
@@ -766,10 +812,52 @@ Resources:
               - Fn::ImportValue: Auth-Tools-prod-UserPoolArn
           - Effect: Allow
             Action:
+              - 'dynamodb:PutItem'
+              - 'dynamodb:Query'
+              - 'dynamodb:UpdateItem'
+              - 'dynamodb:GetItem'
+              - 'dynamodb:Scan'
+              - 'dynamodb:DeleteItem'
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-prod"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-staging"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-prod"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-staging"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-prod"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-staging"
+          - Effect: Allow
+            Action:
               - ssm:GetParameters
             Resource:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
           Version: '2012-10-17'
+
+  E2EBatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ToolsServiceE2ETestsBatchServiceRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: BatchBuildsPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+              - codebuild:RetryBuild
+            Resource:
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/ToolsService-E2E-Tests'
+          Version: '2012-10-17'
+
 
   ToolsServiceLogGroup:
     Type: AWS::Logs::LogGroup
