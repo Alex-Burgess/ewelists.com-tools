@@ -13,6 +13,7 @@ Some of the tools make use a [product scraping API](https://www.scrapinghub.com/
 - [Overview](#overview)
 - [Test Environment Deployment](#test-environment-deployment)
 - [Staging and Production Deployment](#staging-and-production-deployment)
+- [Cypress Testing](#cypress-testing)
 - [Useful Information](#reference)
 
 ## Overview
