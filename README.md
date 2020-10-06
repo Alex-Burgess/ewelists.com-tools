@@ -153,7 +153,7 @@ Deployments to the web and services layers of the staging and production applica
     ```
 
 ### Setup Pipeline and deploy
-1. **Postman Collection:** (Environment Ids should already exist, but we need to add the Tools Collection ID.  The Environment IDs should have been created by the Main application setup.  See [Postman](https://github.com/Alex-Burgess/ewelists.com/blob/master/documentation/reference.md#postman) for reference commands for retrieving IDs.)
+1. **Postman Collection:** (Environment Ids should already exist, but we need to add the Tools Collection ID.  The Environment IDs should have been created by the Main application setup.  See [Postman](https://github.com/Ewelists/ewelists.com/blob/master/documentation/reference.md#postman) for reference commands for retrieving IDs.)
     ```
     aws ssm put-parameter --name /Postman/Collection/Tools --type String --value "6596444-38afc6ee-????"
     ```

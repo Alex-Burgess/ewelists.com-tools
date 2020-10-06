@@ -15,7 +15,7 @@ Parameters:
   Repo:
     Type: String
     Description: Repository where cypress tests reside.
-    Default: https://github.com/Alex-Burgess/ewelists.com-tools-web.git
+    Default: https://github.com/Ewelists/ewelists.com-tools-web.git
   BuildSpec:
     Default: buildspec-cypress-regression-project.yaml
     Description: Name of the buildspec file.

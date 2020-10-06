@@ -14,7 +14,7 @@ Parameters:
   GitHubUser:
     Type: String
     Description: GitHub User
-    Default: Alex-Burgess
+    Default: Ewelists
   GitHubBranch:
     Type: String
     Description: GitHub Branch
