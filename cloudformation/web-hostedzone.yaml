@@ -11,14 +11,10 @@ Parameters:
     Default: test
     Type: String
     AllowedValues:
-      - prod
       - staging
       - dev
       - test
-    ConstraintDescription: must specify prod or test.
-
-Conditions:
-  Prod: !Equals [ !Ref Environment, prod ]
+    ConstraintDescription: must specify staging, dev or test.
 
 Resources:
   SubDomainHostedZone:
@@ -26,23 +22,19 @@ Resources:
     Properties:
       HostedZoneConfig:
         Comment: "Hosted zone for a subdomain"
-      Name: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
+      Name: !Sub "${Environment}.${DomainName}"
       HostedZoneTags:
         - Key: "Environment"
           Value: !Ref Environment
-
-  SubDomainRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneName: 'ewelists.com.'
-      Comment: Naming servers for subdomain hosted zone.
-      Name: !If [Prod, !Ref DomainName, !Sub "${Environment}.${DomainName}"]
-      Type: NS
-      TTL: '172800'
-      ResourceRecords: !GetAtt SubDomainHostedZone.NameServers
 
 
 Outputs:
   HostedZone:
     Description: HostedZoneID of sub domain
     Value: !Ref SubDomainHostedZone
+
+  HostedZoneResourceRecords:
+    Description: Resource Records of sub domain hosted zone.
+    Value: !Join
+      - ','
+      - !GetAtt SubDomainHostedZone.NameServers

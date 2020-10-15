@@ -9,7 +9,7 @@ Parameters:
   SSLCertificateIdParameterVersion:
     Description: Version number of the parameter which stores the SSL certificate ID.
     Type: String
-    Default: 1
+    Default: "1"
   Environment:
     Description: Environment type.
     Default: test

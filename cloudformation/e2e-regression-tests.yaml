@@ -16,8 +16,12 @@ Parameters:
     Type: String
     Description: Repository where cypress tests reside.
     Default: https://github.com/Ewelists/ewelists.com-tools-web.git
-  BuildSpec:
-    Default: buildspec-cypress-regression-project.yaml
+  BuildSpecStaging:
+    Default: buildspecs/buildspec-cypress-regression-staging.yaml
+    Description: Name of the buildspec file.
+    Type: String
+  BuildSpecProd:
+    Default: buildspecs/buildspec-cypress-regression-prod.yaml
     Description: Name of the buildspec file.
     Type: String
   TestTag:
@@ -31,12 +35,20 @@ Parameters:
     Type: String
     Description: Commit ID, branch name, or tag name that corresponds to the version of source code you want to build.
     Default: master
+  CrossAccountE2ERoleName:
+    Type: String
+    Description: Name of the pipeline cross account role.
+    Default: pipeline-tools-CrossAccount-E2E-Role
+
+Conditions:
+  CreateProd: !Equals [ !Ref Environment, prod ]
+  CreateStaging: !Equals [ !Ref Environment, staging ]
 
 Resources:
   E2ETestsProject:
     Type: 'AWS::CodeBuild::Project'
     Properties:
-      Name: !Ref ProjectName
+      Name: !Sub '${ProjectName}-${Environment}'
       Description: Performs end-to-end tests with cypress.
       Artifacts:
         Type: NO_ARTIFACTS
@@ -58,11 +70,17 @@ Resources:
         - Name: TEST_TAG
           Type: PLAINTEXT
           Value: !Ref TestTag
-      ServiceRole: !GetAtt BuildProjectRole.Arn
+        - Name: BUILD_CROSS_ACCOUNT_ROLE
+          Type: PLAINTEXT
+          Value: !Ref CrossAccountE2ERoleName
+        - Name: ACCOUNT_ID
+          Type: PLAINTEXT
+          Value: !Sub "{{resolve:ssm:/accounts/${Environment}:1}}"
+      ServiceRole: !If [CreateProd, !GetAtt ProdRole.Arn, !GetAtt StagingRole.Arn]
       Source:
         Type: GITHUB
         Location: !Ref Repo
-        BuildSpec: !Ref BuildSpec
+        BuildSpec: !If [CreateProd, !Ref BuildSpecProd, !Ref BuildSpecStaging]
       SourceVersion: !Ref SourceVersion
       LogsConfig:
         CloudWatchLogs:
@@ -75,10 +93,11 @@ Resources:
         Restrictions:
           MaximumBuildsAllowed: 10
 
-  BuildProjectRole:
+  StagingRole:
     Type: AWS::IAM::Role
+    Condition: CreateStaging
     Properties:
-      RoleName: !Sub '${ProjectName}-BuildProject-Role'
+      RoleName: !Sub '${ProjectName}-${Environment}-Build-Role'
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
@@ -111,7 +130,7 @@ Resources:
               - cognito-idp:AdminUpdateUserAttributes
               - cognito-idp:AdminDeleteUser
             Resource:
-              - Fn::ImportValue: !Sub 'Auth-Tools-${Environment}-UserPoolArn'
+              - Fn::ImportValue: Auth-Tools-staging-UserPoolArn
           - Effect: Allow
             Action:
               - 'dynamodb:PutItem'
@@ -121,9 +140,9 @@ Resources:
               - 'dynamodb:Scan'
               - 'dynamodb:DeleteItem'
             Resource:
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-${Environment}"
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-${Environment}"
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-${Environment}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-staging"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-staging"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-staging"
           - Effect: Allow
             Action:
               - ssm:GetParameters
@@ -131,10 +150,55 @@ Resources:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
           Version: '2012-10-17'
 
+  ProdRole:
+    Type: AWS::IAM::Role
+    Condition: CreateProd
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-Build-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LoggingPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+          Version: '2012-10-17'
+      - PolicyName: CypressScriptsPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - ssm:GetParameters
+            Resource:
+              - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
+          Version: '2012-10-17'
+      - PolicyName: AssumeProdRolePolicy
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${CrossAccountE2ERoleName}"
+
   BatchServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ProjectName}-BatchService-Role'
+      RoleName: !Sub '${ProjectName}-${Environment}-BatchService-Role'
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
@@ -154,11 +218,11 @@ Resources:
               - codebuild:StopBuild
               - codebuild:RetryBuild
             Resource:
-              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}'
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}'
           Version: '2012-10-17'
 
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '${ProjectName}-Logs'
+      LogGroupName: !Sub '${ProjectName}-${Environment}-Logs'
       RetentionInDays: 30

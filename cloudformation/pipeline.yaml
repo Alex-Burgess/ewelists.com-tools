@@ -42,6 +42,23 @@ Parameters:
     Default: cloudformation/web-infra.yaml
     Description: The path of the Web stack template
     Type: String
+  PipelineCrossAccountRoleName:
+    Type: String
+    Description: Name of the pipeline cross account role.
+    Default: pipeline-tools-CrossAccount-Role
+  PipelineCrossAccountCFRoleName:
+    Type: String
+    Description: Name of the pipeline cross account role.
+    Default: pipeline-tools-CrossAccount-CF-Role
+  PipelineCrossAccountDeployWebContentRoleName:
+    Type: String
+    Description: Name of the pipeline cross account role.
+    Default: pipeline-tools-CrossAccount-DeployWebContent-Role
+  PipelineCrossAccountE2ERoleName:
+    Type: String
+    Description: Name of the pipeline cross account role.
+    Default: pipeline-tools-CrossAccount-E2E-Role
+
 
 Resources:
   PipelineArtifactBucket:
@@ -63,6 +80,30 @@ Resources:
             Prefix: '*'
             Status: Enabled
 
+  PipelineArtifactBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref PipelineArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:Get*'
+              - 's3:Put*'
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+            Principal:
+              AWS:
+                - "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:root"
+                - "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:root"
+          - Action:
+              - 's3:ListBucket'
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${PipelineArtifactBucket}"
+            Principal:
+              AWS:
+                - "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:root"
+                - "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:root"
+
   ToolsServiceBuildsBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -81,6 +122,20 @@ Resources:
             ExpirationInDays: 60
             Prefix: '*'
             Status: Enabled
+
+  ToolsServiceBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref ToolsServiceBuildsBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:Get*'
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${ToolsServiceBuildsBucket}/*"
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountCFRoleName}"
 
   PipelineRole:
     Type: AWS::IAM::Role
@@ -120,6 +175,16 @@ Resources:
                   - codebuild:BatchGetBuildBatches
                   - codebuild:StartBuildBatch
                 Resource: "*"
+        - PolicyName: PipelineCrossAccountPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/*"
+                  - "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/*"
 
   MainWebhook:
     Type: AWS::CodePipeline::Webhook
@@ -177,6 +242,9 @@ Resources:
       ArtifactStore:
         Type: S3
         Location: !Ref PipelineArtifactBucket
+        EncryptionKey:
+          Id: !GetAtt pipelineKey.Arn
+          Type: "KMS"
       Stages:
         - Name: Source
           Actions:
@@ -287,6 +355,23 @@ Resources:
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "staging" }'
               RunOrder: 1
+            - Name: Deploy-Cross-Account-Role
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: S-Services
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/${PipelineCrossAccountCFRoleName}"
+                StackName: Service-Tools-CrossAccount-Role-Staging
+                TemplatePath: S-Services::cloudformation/cross-account-role.yaml
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides: '{ "FunctionEnvironment": "staging", "RoleEnvironment": "test" }'
+              RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/${PipelineCrossAccountRoleName}"
+              RunOrder: 1
             - Name: Integration-Tests
               ActionTypeId:
                 Category: Build
@@ -310,7 +395,7 @@ Resources:
               OutputArtifacts:
                 - Name: D-Web-Staging
               Configuration:
-                ProjectName: !Ref WebDeployContentProject
+                ProjectName: !Ref StagingDeployWebContentProject
                 EnvironmentVariables: !Sub |
                   [
                     {"name": "Commit_ID", "value": "#{WebSourceVariables.CommitId}", "type": "PLAINTEXT"},
@@ -327,7 +412,7 @@ Resources:
               InputArtifacts:
                 - Name: S-Web
               Configuration:
-                ProjectName: !Ref ToolsE2ETestsProject
+                ProjectName: !Ref StagingE2ETestsProject
                 BatchEnabled: true
                 EnvironmentVariables: '[
                   {"name":"ENVIRONMENT","value":"staging","type":"PLAINTEXT"},
@@ -359,11 +444,12 @@ Resources:
                 - Name: D-Main-Prod
               Configuration:
                 ActionMode: CREATE_UPDATE
-                RoleArn: !GetAtt [MainCFNRole, Arn]
+                RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountCFRoleName}"
                 StackName: Web-Tools-Prod
                 TemplatePath: !Sub "S-Main::${WebInfraTemplatePath}"
                 ParameterOverrides: '{ "Environment": "prod" }'
                 OutputFileName: MainOutput.json
+              RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountRoleName}"
               RunOrder: 2
             - Name: Deploy-Services
               ActionTypeId:
@@ -375,11 +461,45 @@ Resources:
                 - Name: B-Services
               Configuration:
                 ActionMode: CREATE_UPDATE
-                RoleArn: !GetAtt ServicesCFNRole.Arn
+                RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountCFRoleName}"
                 StackName: Service-Tools-Prod
                 TemplatePath: B-Services::tools-packaged.yaml
                 Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
                 ParameterOverrides: '{ "Environment": "prod" }'
+              RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountRoleName}"
+              RunOrder: 2
+            - Name: Deploy-Test-Cross-Account-Role
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: S-Services
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/${PipelineCrossAccountCFRoleName}"
+                StackName: Service-Tools-CrossAccount-Role-Prod
+                TemplatePath: S-Services::cloudformation/cross-account-role.yaml
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides: '{ "FunctionEnvironment": "prod", "RoleEnvironment": "test" }'
+              RoleArn: !Sub "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/${PipelineCrossAccountRoleName}"
+              RunOrder: 2
+            - Name: Deploy-Staging-Cross-Account-Role
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              InputArtifacts:
+                - Name: S-Services
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt ServicesCFNRole.Arn
+                StackName: Service-Tools-CrossAccount-Role-Prod
+                TemplatePath: S-Services::cloudformation/cross-account-role.yaml
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides: '{ "FunctionEnvironment": "prod", "RoleEnvironment": "staging" }'
               RunOrder: 2
             - Name: Integration-Tests
               ActionTypeId:
@@ -404,12 +524,15 @@ Resources:
               OutputArtifacts:
                 - Name: D-Web-Prod
               Configuration:
-                ProjectName: !Ref WebDeployContentProject
+                ProjectName: !Ref ProdDeployWebContentProject
                 EnvironmentVariables: !Sub |
                   [
                     {"name": "Commit_ID", "value": "#{WebSourceVariables.CommitId}", "type": "PLAINTEXT"},
                     {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
-                    {"name":"WEB_BUCKET","value":"${WebBucketName}","type":"PLAINTEXT"}
+                    {"name":"WEB_BUCKET","value":"${WebBucketName}","type":"PLAINTEXT"},
+                    {"name":"BUILD_CROSS_ACCOUNT_ROLE","value":"${PipelineCrossAccountDeployWebContentRoleName}","type":"PLAINTEXT"},
+                    {"name":"ACCOUNT_ID","value":"{{resolve:ssm:/accounts/prod:1}}","type":"PLAINTEXT"},
+                    {"name":"PIPELINE","value":"tools","type":"PLAINTEXT"}
                   ]
               RunOrder: 4
             - Name: End-To-End-Tests
@@ -421,16 +544,19 @@ Resources:
               InputArtifacts:
                 - Name: S-Web
               Configuration:
-                ProjectName: !Ref ToolsE2ETestsProject
+                ProjectName: !Ref ProdE2ETestsProject
                 BatchEnabled: true
-                EnvironmentVariables: '[
-                  {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
-                  {"name":"CONFIG","value":"cypress.prod.json","type":"PLAINTEXT"},
-                  {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
-                  {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
-                  {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"},
-                  {"name":"TEST_TAG","value":"smoke","type":"PLAINTEXT"}
-                ]'
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name":"ENVIRONMENT","value":"prod","type":"PLAINTEXT"},
+                    {"name":"CONFIG","value":"cypress.prod.json","type":"PLAINTEXT"},
+                    {"name":"COMMIT_ID","value":"#{WebSourceVariables.CommitId}","type":"PLAINTEXT"},
+                    {"name":"COMMIT_MSG","value":"#{WebSourceVariables.CommitMessage}","type":"PLAINTEXT"},
+                    {"name":"COMMIT_URL","value":"#{WebSourceVariables.CommitUrl}","type":"PLAINTEXT"},
+                    {"name":"TEST_TAG","value":"smoke","type":"PLAINTEXT"},
+                    {"name":"BUILD_CROSS_ACCOUNT_ROLE","value":"${PipelineCrossAccountE2ERoleName}","type":"PLAINTEXT"},
+                    {"name":"ACCOUNT_ID","value":"{{resolve:ssm:/accounts/prod:1}}","type":"PLAINTEXT"}
+                  ]
               RunOrder: 5
 
   ToolsBuildProject:
@@ -513,10 +639,10 @@ Resources:
           GroupName: !Ref ToolsServiceLogGroup
           StreamName: Integration-Tests
 
-  ToolsE2ETestsProject:
+  StagingE2ETestsProject:
     Type: 'AWS::CodeBuild::Project'
     Properties:
-      Name: ToolsService-E2E-Tests
+      Name: Tools-E2E-Tests-Staging
       Description: Performs end-to-end tests with cypress.
       Artifacts:
         Type: CODEPIPELINE
@@ -531,7 +657,7 @@ Resources:
       ServiceRole: !GetAtt E2EBuildProjectRole.Arn
       Source:
         Type: CODEPIPELINE
-        BuildSpec: buildspec-cypress.yaml
+        BuildSpec: buildspecs/buildspec-cypress.yaml
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
@@ -543,11 +669,40 @@ Resources:
         Restrictions:
           MaximumBuildsAllowed: 10
 
-
-  WebDeployContentProject:
+  ProdE2ETestsProject:
     Type: 'AWS::CodeBuild::Project'
     Properties:
-      Name: Web-Tools-Deploy-Content
+      Name: Tools-E2E-Tests-Prod
+      Description: Performs end-to-end tests with cypress.
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:4.0'
+      ServiceRole: !GetAtt E2EBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspecs/buildspec-cypress-prod.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ToolsServiceLogGroup
+          StreamName: E2E-Tests
+      BuildBatchConfig:
+        ServiceRole: !Ref E2EBatchServiceRole
+        TimeoutInMins: 15
+        Restrictions:
+          MaximumBuildsAllowed: 10
+
+  StagingDeployWebContentProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: Tools-Web-Deploy-Content-Staging
       Description: Deploys react web application
       Artifacts:
         Type: CODEPIPELINE
@@ -559,15 +714,35 @@ Resources:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/standard:4.0
-        EnvironmentVariables:
-          - Name: WEB_BUCKET
-            Value: !Ref WebBucketName
-          - Name: ENVIRONMENT
-            Value: prod
       ServiceRole: !GetAtt WebDeployContentRole.Arn
       Source:
         Type: CODEPIPELINE
-        BuildSpec: buildspec-react.yaml
+        BuildSpec: buildspecs/buildspec-react.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: web-tools
+          StreamName: DeployContent
+
+  ProdDeployWebContentProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: Tools-Web-Deploy-Content-Prod
+      Description: Deploys react web application
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: LOCAL
+        Modes:
+        - LOCAL_DOCKER_LAYER_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+      ServiceRole: !GetAtt WebDeployContentRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspecs/buildspec-react-prod.yaml
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
@@ -628,6 +803,25 @@ Resources:
             Action:
               - codepipeline:ListPipelineExecutions
             Resource: '*'
+      - PolicyName: AssumeProdRolePolicy
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountDeployWebContentRoleName}"
+      - PolicyName: BucketEncryptionPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:Decrypt
+            Resource: !GetAtt pipelineKey.Arn
           Version: '2012-10-17'
 
   MainCFNRole:
@@ -667,7 +861,18 @@ Resources:
                 Effect: Allow
                 Resource:
                   - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tools.ewelists.com/staging/SSLCertificateId'
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tools.ewelists.com/prod/SSLCertificateId'
+        - PolicyName: AccountsParameterStore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - ssm:GetParameters
+                Effect: Allow
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/prod'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/staging'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/test'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/dev'
         - PolicyName: ManageS3
           PolicyDocument:
             Version: '2012-10-17'
@@ -687,10 +892,6 @@ Resources:
                   - s3:GetBucketPolicy
                 Effect: Allow
                 Resource:
-                  - "arn:aws:s3:::tools.ewelists.com"
-                  - "arn:aws:s3:::tools.ewelists.com/*"
-                  - "arn:aws:s3:::tools.ewelists.com-logging"
-                  - "arn:aws:s3:::tools.ewelists.com-logging/*"
                   - "arn:aws:s3:::staging.tools.ewelists.com"
                   - "arn:aws:s3:::staging.tools.ewelists.com/*"
                   - "arn:aws:s3:::staging.tools.ewelists.com-logging"
@@ -700,7 +901,7 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Action:
-                  - route53:*
+                  - route53:ChangeResourceRecordSets
                 Effect: Allow
                 Resource:
                   - "*"
@@ -764,6 +965,18 @@ Resources:
             Resource:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Postman/*"
           Version: '2012-10-17'
+      - PolicyName: BucketEncryptionPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:Decrypt
+            Resource: !GetAtt pipelineKey.Arn
+          Version: '2012-10-17'
 
   E2EBuildProjectRole:
     Type: AWS::IAM::Role
@@ -809,7 +1022,6 @@ Resources:
               - cognito-idp:*
             Resource:
               - Fn::ImportValue: Auth-Tools-staging-UserPoolArn
-              - Fn::ImportValue: Auth-Tools-prod-UserPoolArn
           - Effect: Allow
             Action:
               - 'dynamodb:PutItem'
@@ -819,18 +1031,34 @@ Resources:
               - 'dynamodb:Scan'
               - 'dynamodb:DeleteItem'
             Resource:
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-prod"
               - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-staging"
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-prod"
               - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-staging"
-              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-prod"
               - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-staging"
           - Effect: Allow
             Action:
               - ssm:GetParameters
             Resource:
               - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
+      - PolicyName: BucketEncryptionPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:Decrypt
+            Resource: !GetAtt pipelineKey.Arn
           Version: '2012-10-17'
+      - PolicyName: AssumeProdRolePolicy
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Resource:
+                - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountE2ERoleName}"
 
   E2EBatchServiceRole:
     Type: AWS::IAM::Role
@@ -855,9 +1083,20 @@ Resources:
               - codebuild:StopBuild
               - codebuild:RetryBuild
             Resource:
-              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/ToolsService-E2E-Tests'
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/Tools-E2E-Tests-Staging'
+              - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/Tools-E2E-Tests-Prod'
+      - PolicyName: BucketEncryptionPolicy
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:Decrypt
+            Resource: !GetAtt pipelineKey.Arn
           Version: '2012-10-17'
-
 
   ToolsServiceLogGroup:
     Type: AWS::Logs::LogGroup
@@ -947,6 +1186,10 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertEmail'
                   - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertNumber'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/prod'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/staging'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/test'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/dev'
         - PolicyName: Events
           PolicyDocument:
             Version: '2012-10-17'
@@ -984,3 +1227,51 @@ Resources:
                   - cloudwatch:*
                 Effect: Allow
                 Resource: '*'
+
+  pipelineKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Symmetric CMK for pipeline to have cross-account permissions
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow administration of the key
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/AdminAccessRole"
+          Action:
+          - kms:Create*
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:ScheduleKeyDeletion
+          - kms:CancelKeyDeletion
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS:
+              - !Sub "arn:aws:iam::${AWS::AccountId}:role/pipeline-tools-ServiceRole"
+              - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/test:1}}:role/${PipelineCrossAccountRoleName}"
+              - !Sub "arn:aws:iam::{{resolve:ssm:/accounts/prod:1}}:role/${PipelineCrossAccountRoleName}"
+          Action:
+          - kms:DescribeKey
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey
+          - kms:GenerateDataKeyWithoutPlaintext
+          Resource: '*'

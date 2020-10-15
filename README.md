@@ -25,6 +25,23 @@ The Tools application is based on the same Serverless architecture pattern as th
 - **Database:** The functions typically interact with the existing application DynamoDB tables.
 - **Pipeline:** A CI/CD pipeline automates the deployments to the staging and production environments.
 
+## Pre-requisites
+
+1. Setup parameter store variables in each account with account ids:
+    ```
+    aws ssm put-parameter --name /accounts/dev --type String --value "123456789012"
+    aws ssm put-parameter --name /accounts/staging --type String --value "123456789012"
+    aws ssm put-parameter --name /accounts/prod --type String --value "123456789012"
+    ```
+1. A role is required in the **Staging environment**, to allow the lambda function to perform actions against the staging table.
+    ```
+    aws cloudformation create-stack --stack-name Tools-Service-Assume-Role-Test \
+     --template-body file://cross-account-role.yaml \
+     --capabilities CAPABILITY_NAMED_IAM \
+     --parameters ParameterKey=FunctionEnvironment,ParameterValue=test \
+      ParameterKey=RoleEnvironment,ParameterValue=staging
+    ```
+
 ## Test Environment Deployment
 The steps below are used to build the test environment of the application.
 
@@ -41,6 +58,12 @@ The steps below are used to build the test environment of the application.
     aws cloudformation create-stack --stack-name Web-HostedZone-Tools-Test --template-body file://web-hostedzone.yaml \
       --parameters ParameterKey=Environment,ParameterValue=test
     ```
+1. **Delegate domain (In Prod Account):** If environment is test or staging, the hosted zone needs to be delegated from main domain.  Resource records are output from command above.
+    ```
+    aws cloudformation create-stack --stack-name Web-SubDomain-Tools-Test --template-body file://web-subdomain-record.yaml \
+      --parameters ParameterKey=Environment,ParameterValue=test \
+      ParameterKey=ResourceRecords,ParameterValue="ns-1699.awsdns-20.co.uk\,ns-139.awsdns-17.com\,ns-635.awsdns-15.net\,ns-1480.awsdns-57.org"
+    ```
 1. **SSL Certificate:** (Get HostedZoneID from outputs of HostedZone stack, must be in us-east-1 region for use with CloudFront.)
     ```
     aws cloudformation create-stack --region us-east-1 --stack-name Web-SSL-Tools-Test \
@@ -54,7 +77,8 @@ The steps below are used to build the test environment of the application.
 1. **Web Stack:**
     ```
     aws cloudformation create-stack --stack-name Web-Tools-Test --template-body file://web-infra.yaml \
-      --parameters ParameterKey=Environment,ParameterValue=test
+      --parameters ParameterKey=Environment,ParameterValue=test \
+        ParameterKey=SSLCertificateIdParameterVersion,ParameterValue=1
     ```
 1. **Services Secrets:**
     ```
@@ -63,7 +87,10 @@ The steps below are used to build the test environment of the application.
     ```
 1. **Services Stack:**
     ```
+    cd ~/Development/ewelists.com-tools-services/Tools
     aws s3 mb s3://sam-builds-tools-test
+    aws ssm put-parameter --name /Ewelists/AlertNumber --type String --value "+44134567890"
+    aws ssm put-parameter --name /Ewelists/AlertEmail --type String --value "contact@ewelists.com"
 
     sam build
 
@@ -78,6 +105,7 @@ The steps below are used to build the test environment of the application.
     ```
 1. **Build and Deploy Content:** (Ensure that Cognito and API configuration is updated in config.js)
     ```
+    cd ~/Development/ewelists.com-tools-web
     npm run build
     aws s3 sync build/ s3://test.tools.ewelists.com --delete
     ```
@@ -105,6 +133,12 @@ Deployments to the web and services layers of the staging and production applica
     ```
     aws cloudformation create-stack --stack-name Web-HostedZone-Tools-Staging --template-body file://web-hostedzone.yaml \
       --parameters ParameterKey=Environment,ParameterValue=staging
+    ```
+1. **Delegate domain (In Prod Account):** If environment is test or staging, the hosted zone needs to be delegated from main domain.  Resource records are output from command above.
+    ```
+    aws cloudformation create-stack --stack-name Web-SubDomain-Tools-Staging --template-body file://web-subdomain-record.yaml \
+      --parameters ParameterKey=Environment,ParameterValue=staging \
+      ParameterKey=ResourceRecords,ParameterValue="<ENTER RESOURCE RECORDS>"
     ```
 1. **SSL Certificate:** (Get HostedZoneID from outputs of HostedZone stack, must be in us-east-1 region for use with CloudFront)
     ```
@@ -135,6 +169,12 @@ Deployments to the web and services layers of the staging and production applica
     ```
     aws cloudformation create-stack --stack-name Web-HostedZone-Tools-Prod --template-body file://web-hostedzone.yaml \
       --parameters ParameterKey=Environment,ParameterValue=prod
+    ```
+1. **Delegate domain (In Prod Account):** If environment is test or staging, the hosted zone needs to be delegated from main domain.  Resource records are output from command above.
+    ```
+    aws cloudformation create-stack --stack-name Web-SubDomain-Tools-Staging --template-body file://web-subdomain-record.yaml \
+      --parameters ParameterKey=Environment,ParameterValue=staging \
+      ParameterKey=ResourceRecords,ParameterValue="<ENTER RESOURCE RECORDS>"
     ```
 1. **SSL Certificate:** (Get HostedZoneID from outputs of HostedZone stack, must be in us-east-1 region for use with CloudFront)
     ```
@@ -169,6 +209,23 @@ Deployments to the web and services layers of the staging and production applica
       --parameters ParameterKey=GitHubToken,ParameterValue=`aws ssm get-parameter --name "/ewelists.com/github" --with-decryption --query 'Parameter.Value' --output text` \
         ParameterKey=GitHubSecret,ParameterValue=`aws ssm get-parameter --name "/ewelists.com/github_secret" --with-decryption --query  'Parameter.Value' --output text`
     ```
+1. **Pipeline CMK:** The pipeline stack creates a KMS CMK for encrypting bucket artifacts, which is necessary when performing cross account actions with the pipeline. In **test** and **prod** environments create a parameter:
+    ```
+    aws ssm put-parameter --name /Tools/pipeline/cmk --type String --value "6596444-38afc6ee-????"
+    ```
+1. **Cross Account Roles (Test):** Roles are required in the other environments to allow the pipeline to deploy stacks, etc.
+    ```
+    aws cloudformation create-stack --stack-name Pipeline-Tools-Roles  \
+      --template-body file://pipeline-cross-account-roles.yaml  \
+      --capabilities CAPABILITY_NAMED_IAM
+    ```
+1. **Cross Account Test Roles (Prod):** Roles are required in the other environments to allow the pipeline to deploy stacks, etc.
+    ```
+    aws cloudformation create-stack --stack-name Pipeline-Tools-Roles  \
+      --template-body file://pipeline-cross-account-roles.yaml  \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --parameters ParameterKey=Environment,ParameterValue="prod"
+    ```
 1. **Initial Deploy:** The **Release Change** button can be used to trigger the first run through the pipeline.
 1. **Update Config.js and Re-Deploy:** This step could be further automated in the **Deploy-Web** step, by passing the API details as variables to the build script that deploys the web application and automating the update of the config.js file.
 
@@ -185,6 +242,11 @@ E2E smoke tests are carried out as part of deployments to staging and production
     aws cloudformation create-stack --stack-name Build-Tools-Regression-Tests  \
       --template-body file://e2e-regression-tests.yaml  \
       --capabilities CAPABILITY_NAMED_IAM
+
+    aws cloudformation create-stack --stack-name Build-Tools-Regression-Tests-Prod  \
+      --template-body file://e2e-regression-tests.yaml  \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --parameters ParameterKey=Environment,ParameterValue=prod
     ```
 1. **Trigger Test Run:**
     ```

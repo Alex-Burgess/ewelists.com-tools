@@ -1,0 +1,371 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Roles and policies that need to be created to allow pipeline permissions in another account.
+Parameters:
+  PipelineName:
+    Type: String
+    Description: Name of pipeline.
+    Default: tools
+    AllowedPattern: "^[-a-z0-9]*$"
+    ConstraintDescription: Pipeline name can include numbers, lowercase letters, and hyphens (-).
+  PipelineArtifactBucket:
+    Type: String
+    Description: Tools Pipeline Artifact Bucket Name
+    Default: pipeline-ewelists-tools-eu-west-1-artifacts
+  ToolsServiceBuildsBucket:
+    Type: String
+    Description: Tools Services Build Bucket Name
+    Default: services-builds-tools
+  ToolsWebBucket:
+    Type: String
+    Description: Tools Web Bucket Name
+    Default: tools.ewelists.com
+  Environment:
+    Description: Environment type.
+    Default: test
+    Type: String
+    AllowedValues:
+      - prod
+      - test
+
+Conditions:
+  CreateProd: !Equals [ !Ref Environment, prod ]
+  CreateTest: !Equals [ !Ref Environment, test ]
+
+Resources:
+  CrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-CrossAccount-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            AWS: "arn:aws:iam::{{resolve:ssm:/accounts/staging:1}}:root"
+        Version: '2012-10-17'
+      Path: /
+
+  PipelineCMKPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-KMS-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              -  kms:DescribeKey
+              -  kms:GenerateDataKey*
+              -  kms:Encrypt
+              -  kms:ReEncrypt*
+              -  kms:Decrypt
+            Resource:
+              - !Sub "arn:aws:kms:${AWS::Region}:{{resolve:ssm:/accounts/staging:1}}:key/{{resolve:ssm:/Tools/pipeline/cmk:1}}"
+      Roles:
+        - !Ref CrossAccountRole
+
+  PipelineCrossAccountPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              -  cloudformation:*
+              -  iam:PassRole
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - cloudformation:*
+              - s3:Get*
+              - s3:Put*
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+      Roles:
+        - !Ref CrossAccountRole
+
+  CrossAccountCFRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-CrossAccount-CF-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            Service: [cloudformation.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+
+  CrossAccountCFPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-CF-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DeleteStack
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+            Resource:
+              - "*"
+      Roles:
+        - !Ref CrossAccountCFRole
+
+  CrossAccountAccountsParametersPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-AccountsParams-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - ssm:GetParameters
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/accounts/*'
+      Roles:
+        - !Ref CrossAccountCFRole
+
+  CrossAccountIamPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateTest
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-Iam-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:*
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/Tools-Service-Cross-Account-Exection-Role-*'
+      Roles:
+        - !Ref CrossAccountCFRole
+
+  CrossAccountWebStackPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateProd
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-WebStack-policy'
+      Roles:
+        - !Ref CrossAccountCFRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - s3:GetObject
+              - s3:CreateBucket
+              - s3:DeleteBucket
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutLifecycleConfiguration
+              - s3:PutBucketAcl
+              - s3:GetBucketAcl
+              - s3:PutBucketLogging
+              - s3:PutMetricsConfiguration
+              - s3:PutBucketWebsite
+              - s3:PutBucketPolicy
+              - s3:GetBucketPolicy
+            Effect: Allow
+            Resource:
+              - "arn:aws:s3:::tools.ewelists.com"
+              - "arn:aws:s3:::tools.ewelists.com/*"
+              - "arn:aws:s3:::tools.ewelists.com-logging"
+              - "arn:aws:s3:::tools.ewelists.com-logging/*"
+          - Action:
+              - cloudfront:CreateCloudFrontOriginAccessIdentity
+              - cloudfront:CreateDistribution
+              - cloudfront:DeleteDistribution
+              - cloudfront:GetCloudFrontOriginAccessIdentity
+              - cloudfront:GetCloudFrontOriginAccessIdentityConfig
+              - cloudfront:DeleteCloudFrontOriginAccessIdentity
+              - cloudfront:TagResource
+              - cloudfront:GetDistribution
+              - cloudfront:UpdateDistribution
+              - cloudfront:UpdateCloudFrontOriginAccessIdentity
+            Effect: Allow
+            Resource:
+              - "*"
+          - Action:
+              - route53:ChangeResourceRecordSets
+            Effect: Allow
+            Resource:
+              - "*"
+          - Action:
+              - ssm:GetParameters
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tools.ewelists.com/prod/SSLCertificateId'
+
+  CrossAccountServicesStackPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateProd
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-Services-policy'
+      Roles:
+        - !Ref CrossAccountCFRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource:
+              - !Sub "arn:aws:s3:::${ToolsServiceBuildsBucket}/*"
+          - Action:
+              - iam:ListRoles
+              - iam:ListPolicies
+              - iam:GetRole
+              - iam:GetPolicy
+              - iam:CreateRole
+              - iam:CreatePolicy
+              - iam:DeleteRole
+              - iam:DeletePolicy
+              - iam:UpdateRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PassRole
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:getRolePolicy
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - lambda:*
+              - apigateway:*
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - ssm:GetParameters
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertEmail'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Ewelists/AlertNumber'
+          - Action:
+              - events:*
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/Service-Tools*'
+          - Action:
+              - sns:List*
+              - sns:Get*
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:ConfirmSubscription
+              - sns:Set*
+              - sns:Subscribe
+              - sns:Unsubscribe
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:NotFound-*'
+              - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:Backup-*'
+          - Action:
+              - cloudwatch:*
+            Effect: Allow
+            Resource: '*'
+
+  CrossAccountWebContentRole:
+    Type: AWS::IAM::Role
+    Condition: CreateProd
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-CrossAccount-DeployWebContent-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            AWS: "arn:aws:iam::{{resolve:ssm:/accounts/staging:1}}:root"
+        Version: '2012-10-17'
+      Path: /
+
+  CrossAccountWebContentPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateProd
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-DeployWebContent-policy'
+      Roles:
+        - !Ref CrossAccountWebContentRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - s3:DeleteObject
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub "arn:aws:s3:::${ToolsWebBucket}/*"
+              - !Sub "arn:aws:s3:::${ToolsWebBucket}"
+          - Action:
+              - cloudfront:CreateInvalidation
+              - cloudfront:ListDistributions
+            Effect: Allow
+            Resource: '*'
+
+  CrossAccountE2ERole:
+    Type: AWS::IAM::Role
+    Condition: CreateProd
+    Properties:
+      RoleName: !Sub 'pipeline-${PipelineName}-CrossAccount-E2E-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            AWS: "arn:aws:iam::{{resolve:ssm:/accounts/staging:1}}:root"
+        Version: '2012-10-17'
+      Path: /
+
+  CrossAccountE2EPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateProd
+    Properties:
+      PolicyName: !Sub 'pipeline-${PipelineName}-CrossAccount-E2E-policy'
+      Roles:
+        - !Ref CrossAccountE2ERole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Action:
+            - cognito-idp:*
+          Resource:
+            - Fn::ImportValue: Auth-Tools-prod-UserPoolArn
+        - Effect: Allow
+          Action:
+            - 'dynamodb:PutItem'
+            - 'dynamodb:Query'
+            - 'dynamodb:UpdateItem'
+            - 'dynamodb:GetItem'
+            - 'dynamodb:Scan'
+            - 'dynamodb:DeleteItem'
+          Resource:
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/lists-prod"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/notfound-prod"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/products-prod"
+        - Effect: Allow
+          Action:
+            - ssm:GetParameters
+          Resource:
+            - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Cypress/Tools/Key"
